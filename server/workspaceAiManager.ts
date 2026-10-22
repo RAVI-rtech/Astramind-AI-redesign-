@@ -1,0 +1,844 @@
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import OpenAI from "openai";
+import { PDFParse } from "pdf-parse";
+import { DocumentProfile, QuizQuestion, Flashcard, ImportantQuestion, SummaryNotesData, PracticeExercise, StudyContext } from "../src/types";
+
+function getNvidiaKeys(): string[] {
+  const keys = [
+    process.env.NVIDIA_API_KEY,
+    process.env.NVIDIA_KEY_1,
+    process.env.NVIDIA_API_KEY_2,
+    process.env.NVIDIA_API_KEY_3,
+  ].filter(Boolean) as string[];
+  return keys;
+}
+
+function extractJSON(text: string): any {
+  if (!text) throw new Error("Empty AI response");
+  let cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        return JSON.parse(arrayMatch[0]);
+      } catch {
+        // continue
+      }
+    }
+    const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      try {
+        return JSON.parse(objectMatch[0]);
+      } catch {
+        // continue
+      }
+    }
+    throw new Error("Unable to parse structured JSON from AI response: " + cleaned.slice(0, 150));
+  }
+}
+
+export type AIPart = 
+  | { text: string } 
+  | { inlineData: { mimeType: string; data: string } };
+
+async function runPromptWithAI(
+  systemInstruction: string,
+  promptOrParts: string | AIPart[],
+  temperature = 0.25
+): Promise<string> {
+  const errors: string[] = [];
+
+  const parts: AIPart[] = typeof promptOrParts === "string" 
+    ? [{ text: promptOrParts }] 
+    : promptOrParts;
+
+  // 1. Try Gemini Models with GEMINI_API_KEY
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (geminiKey) {
+    const geminiModels = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash"];
+    const ai = new GoogleGenAI({
+      apiKey: geminiKey,
+      httpOptions: {
+        headers: { "User-Agent": "aistudio-build" },
+      },
+    });
+
+    for (const model of geminiModels) {
+      try {
+        const thinkingConfig = model.includes("3.1-flash-lite")
+          ? { thinkingLevel: ThinkingLevel.MINIMAL }
+          : model.includes("3.8-flash")
+            ? { thinkingLevel: ThinkingLevel.LOW }
+            : { thinkingBudget: 0 };
+
+        const resp = await ai.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: parts as any }],
+          config: {
+            systemInstruction,
+            temperature,
+            thinkingConfig,
+          },
+        });
+        const text = resp.text || "";
+        if (text.trim()) {
+          return text;
+        }
+      } catch (err: any) {
+        errors.push(`Gemini (${model}): ${err?.message || err}`);
+      }
+    }
+  }
+
+  // 2. Try NVIDIA NIM Failover (Text only)
+  const nvidiaKeys = getNvidiaKeys();
+  const nvidiaModels = [
+    "meta/llama-3.3-70b-instruct",
+    "meta/llama-3.2-11b-vision-instruct",
+    "meta/llama-3.1-8b-instruct",
+  ];
+
+  // Extract text representation from parts for failover
+  const textPrompt = parts
+    .map((p) => ("text" in p && p.text ? p.text : ""))
+    .filter(Boolean)
+    .join("\n\n");
+
+  if (textPrompt) {
+    for (const nKey of nvidiaKeys) {
+      const client = new OpenAI({
+        apiKey: nKey,
+        baseURL: "https://integrate.api.nvidia.com/v1",
+      });
+
+      for (const model of nvidiaModels) {
+        try {
+          const resp = await client.chat.completions.create({
+            model,
+            messages: [
+              { role: "system", content: systemInstruction },
+              { role: "user", content: textPrompt },
+            ],
+            temperature,
+          });
+          const text = resp.choices[0]?.message?.content || "";
+          if (text.trim()) {
+            return text;
+          }
+        } catch (err: any) {
+          errors.push(`NVIDIA (${model}): ${err?.message || err}`);
+        }
+      }
+    }
+  }
+
+  throw new Error(
+    `All AI providers failed. Check GEMINI_API_KEY or NVIDIA_API_KEY. Details: ${errors.slice(-2).join("; ") || "No API key configured."}`
+  );
+}
+
+// =========================================================================
+// 1. DOCUMENT UNDERSTANDING & AUTOMATIC SUBJECT / DOMAIN DETECTION
+// =========================================================================
+
+export async function analyzeUploadedDocument(params: {
+  fileName: string;
+  fileType: string;
+  base64?: string;
+  content?: string;
+}): Promise<{ profile: DocumentProfile; extractedText: string }> {
+  const { fileName, fileType, base64, content } = params;
+  let extractedText = content || "";
+  let pageCount = 0;
+
+  // Handle PDF text extraction via PDFParse if base64 is present
+  if (base64 && (fileType === "pdf" || fileName.toLowerCase().endsWith(".pdf"))) {
+    try {
+      const buffer = Buffer.from(base64, "base64");
+      const parser: any = new (PDFParse as any)({ data: buffer });
+      if (typeof parser.load === "function") {
+        await parser.load();
+      }
+      const res: any = typeof parser.getText === "function" ? await parser.getText() : null;
+      const text = typeof res === "string" ? res : res?.text || "";
+      if (text && text.trim()) {
+        extractedText = text.trim();
+      }
+      pageCount = parser.doc?.numPages || res?.total || res?.numpages || 0;
+    } catch (err) {
+      console.warn("PDFParse extraction had error, will use multimodal Gemini:", err);
+    }
+  }
+
+  // Refuse to invent a document profile when no readable source text was extracted.
+  // Study tools are enabled only for actual extracted text, never for the file name alone.
+  if (extractedText.trim().length < 30) {
+    const profile: DocumentProfile = {
+      fileName,
+      detectedDomain: "Unknown / General",
+      confidence: "Low",
+      confidenceNote: "No readable text could be extracted from this file. Use a text-based PDF or TXT/Markdown document.",
+      title: fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " "),
+      topics: [],
+      estimatedSections: 0,
+      pages: pageCount,
+      extractedTextLength: extractedText.length,
+      hasFormulas: false,
+      hasCode: false,
+      hasTables: false,
+      keyTerminology: [],
+      summary: "No readable text was extracted. Upload a text-based document before using source-grounded study tools.",
+      processingStatus: {
+        contentExtracted: false,
+        topicsIdentified: false,
+        studyToolsReady: false,
+      },
+    };
+    return { profile, extractedText };
+  }
+
+  const systemInstruction = `You are AstraMind's Academic Document Understanding Engine.
+Your critical mission is to read and understand the uploaded document and identify its REAL academic subject, domain, structure, and topics.
+
+CRITICAL SOURCE-GROUNDING & ANTI-BIAS RULES:
+1. DO NOT ASSUME MATHEMATICS! NEVER categorize a document as Mathematics unless the primary subject matter is explicitly mathematical (such as Calculus, Linear Algebra, Matrix Theory, Differential Equations).
+2. If the document is about Database Management Systems (SQL, Relational algebra, Normalization, ACID transactions, ER diagrams), classify the domain as "DBMS" or "Database Management Systems".
+3. If the document is about Operating Systems (Processes, Threads, Scheduling, Semaphores, Deadlocks, Virtual Memory, Paging), classify the domain as "Operating Systems".
+4. If the document is about Computer Networks (OSI model, TCP/IP, Routing, Subnetting, Socket programming), classify as "Computer Networks".
+5. If the document is about Programming / Software (Python, Java, C, Data Structures, OOP), classify as "Programming / <Language>" or "Computer Science".
+6. If the document is about Physics (Thermodynamics, Electromagnetism, Quantum Mechanics, Optics), classify as "Physics".
+7. If the document is about Electronics / Electrical (Circuits, Microprocessors, DLD, Signals), classify as "Electronics" or "Electrical Engineering".
+8. If the document contains mixed topics across multiple fields, classify as "Mixed / Multi-topic".
+9. If you cannot determine the subject with high confidence or the content is sparse/corrupted, set confidence to "Low" and detectedDomain to "General Academic" or "Unknown / General". Provide a clear, honest explanation in "confidenceNote" (e.g. "Some parts of this document could not be confidently classified.").
+10. Extract 4 to 8 distinct, specific topic headings actually discussed in this document.
+11. Detect if the document contains code, mathematical formulas, or structured tables.
+12. Extract 8 to 15 key technical terms actually used in the document.
+13. Write a clean, 2-3 sentence factual summary of what the document covers.
+
+RETURN STRICT JSON ONLY MATCHING THIS SCHEMA:
+{
+  "detectedDomain": "Actual subject or domain",
+  "confidence": "High" | "Medium" | "Low",
+  "confidenceNote": "Explanation if confidence is Low or Medium",
+  "title": "Clean document title",
+  "topics": ["Topic 1", "Topic 2", "Topic 3", "Topic 4"],
+  "estimatedSections": <integer count of sections/units>,
+  "keyTerminology": ["term1", "term2", "term3", ...],
+  "hasFormulas": <boolean>,
+  "hasCode": <boolean>,
+  "hasTables": <boolean>,
+  "summary": "2-3 sentence factual summary"
+}`;
+
+  let aiPromptParts: AIPart[] = [];
+
+  if (base64 && (fileType === "pdf" || fileName.toLowerCase().endsWith(".pdf")) && (!extractedText || extractedText.length < 300)) {
+    // Pass inline PDF for vision/multimodal parsing
+    aiPromptParts = [
+      { inlineData: { mimeType: "application/pdf", data: base64 } },
+      {
+        text: `Analyze this uploaded PDF file: "${fileName}".
+Inspect all pages, headings, definitions, equations, diagrams, and terminology to construct the authoritative document profile.`,
+      },
+    ];
+  } else {
+    const textSnippet = extractedText.slice(0, 20000);
+    aiPromptParts = [
+      {
+        text: `Analyze this uploaded document: "${fileName}" (Type: ${fileType}, Pages: ${pageCount}).
+
+DOCUMENT EXTRACTED CONTENT:
+${textSnippet || "No text could be extracted directly from this document. Please inspect the filename and context."}
+
+Construct the authoritative document profile following the strict source-grounding rules.`,
+      },
+    ];
+  }
+
+  try {
+    const rawAiOutput = await runPromptWithAI(systemInstruction, aiPromptParts, 0.2);
+    const parsed = extractJSON(rawAiOutput);
+
+    const detectedDomain = parsed.detectedDomain || "General Academic";
+    const confidence: "High" | "Medium" | "Low" = 
+      parsed.confidence === "High" || parsed.confidence === "Medium" || parsed.confidence === "Low" 
+        ? parsed.confidence 
+        : "Medium";
+
+    const topics: string[] = Array.isArray(parsed.topics)
+      ? parsed.topics.map((t: any) => String(t).trim()).filter((t: string) => t.length > 0)
+      : [];
+
+    const estimatedSections = Number(parsed.estimatedSections) || 0;
+
+    const profile: DocumentProfile = {
+      fileName,
+      detectedDomain,
+      confidence,
+      confidenceNote: parsed.confidenceNote || (confidence === "Low" ? "Some parts of this document could not be confidently classified." : undefined),
+      title: parsed.title || fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " "),
+      topics,
+      estimatedSections,
+      pages: pageCount,
+      extractedTextLength: extractedText.length,
+      hasFormulas: Boolean(parsed.hasFormulas),
+      hasCode: Boolean(parsed.hasCode),
+      hasTables: Boolean(parsed.hasTables),
+      keyTerminology: Array.isArray(parsed.keyTerminology) ? parsed.keyTerminology : [],
+      summary: parsed.summary || "Document profile generated from extracted text.",
+      processingStatus: {
+        contentExtracted: extractedText.trim().length >= 30,
+        topicsIdentified: topics.length > 0,
+        studyToolsReady: extractedText.trim().length >= 30,
+      },
+    };
+
+    return { profile, extractedText };
+  } catch (err: any) {
+    console.error("Error analyzing uploaded document:", err);
+
+    const profile: DocumentProfile = {
+      fileName,
+      detectedDomain: "Unknown / General",
+      confidence: "Low",
+      confidenceNote: "Automatic document classification failed. Any available extracted text is retained, but no topics are fabricated.",
+      title: fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " "),
+      topics: [],
+      estimatedSections: 0,
+      pages: pageCount,
+      extractedTextLength: extractedText.length,
+      hasFormulas: /[=∑√π≤≥±]/.test(extractedText),
+      hasCode: /(?:function|class|import |#include|def )/.test(extractedText),
+      hasTables: false,
+      keyTerminology: [],
+      summary: extractedText.trim().length >= 30
+        ? "The document text was extracted, but AI classification is temporarily unavailable."
+        : "No usable text was extracted. Upload a text-based document before starting study tools.",
+      processingStatus: {
+        contentExtracted: extractedText.trim().length >= 30,
+        topicsIdentified: false,
+        studyToolsReady: extractedText.trim().length >= 30,
+      },
+    };
+
+    return { profile, extractedText };
+
+  }
+}
+
+// =========================================================================
+// 2. GUIDED LESSON GENERATION (STRICTLY SOURCE-DRIVEN)
+// =========================================================================
+
+export async function generateGuidedLesson(params: {
+  subject: string;
+  topic: string;
+  extractedContent?: string;
+  materialSummary?: string;
+  previousConcepts?: string[];
+}) {
+  const { subject, topic, extractedContent } = params;
+  if (typeof extractedContent !== "string" || extractedContent.trim().length < 30) {
+    throw new Error("Upload a readable study document before generating a lesson.");
+  }
+
+  const systemInstruction = `You are a master academic educator and tutor.
+Your lesson MUST BE AUTHORITATIVELY ROOTED in the provided source material.
+DO NOT invent unrelated topics. If the document is about ${subject}, deliver an exceptional, intuitive explanation strictly on ${topic} using the document's original terminology, definitions, and examples.
+DO NOT assume Mathematics unless the source material is explicitly about Mathematics.`;
+
+  const prompt = `Generate a guided smart lesson for:
+Subject / Domain: "${subject}"
+Topic: "${topic}"
+
+SOURCE MATERIAL CONTEXT:
+${extractedContent.slice(0, 14000)}
+
+RETURN STRICT JSON ONLY:
+{
+  "conceptTitle": "Concise, engaging title of the concept",
+  "conceptExplanation": "Clear, intuitive breakdown of the concept in 2-3 structured paragraphs. Explain how it works step-by-step using the source material's definitions and logic.",
+  "example": "A concrete real-world engineering scenario, code snippet, formula derivation, or worked example directly relevant to this concept.",
+  "checkQuestion": {
+    "question": "A concept-check question testing real understanding of this exact point",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correctIndex": 0,
+    "explanation": "Clear explanation of why this answer is correct and what makes the other options incorrect."
+  }
+}
+Do not wrap in markdown code fences. Return valid JSON only.`;
+
+  try {
+    const raw = await runPromptWithAI(systemInstruction, prompt);
+    const parsed = extractJSON(raw);
+    if (parsed && parsed.conceptTitle && parsed.conceptExplanation && parsed.checkQuestion) {
+      return parsed;
+    }
+    throw new Error("Invalid lesson JSON structure received");
+  } catch (e: any) {
+    console.error("Lesson generation error:", e);
+    throw new Error(`Unable to generate lesson for "${topic}": ${e.message}`);
+  }
+}
+
+// =========================================================================
+// 3. MCQ & INTERACTIVE QUIZ GENERATION (STRICTLY SOURCE-DRIVEN)
+// =========================================================================
+
+export async function generateMCQQuiz(params: {
+  subject: string;
+  topic: string;
+  count: number;
+  difficulty: string;
+  questionType?: string;
+  extractedContent?: string;
+  materialsContext?: string;
+  hasCode?: boolean;
+  hasFormulas?: boolean;
+}): Promise<QuizQuestion[]> {
+  const count = Math.min(25, Math.max(3, params.count || 5));
+  const { subject, topic, difficulty, questionType, extractedContent } = params;
+  if (typeof extractedContent !== "string" || extractedContent.trim().length < 30) {
+    throw new Error("Upload a readable study document before generating quiz questions.");
+  }
+
+  const typeConstraint = questionType && questionType !== "All Types"
+    ? `- Focus specifically on question format: "${questionType}".`
+    : `- Support a realistic mix: conceptual MCQs, True/False, definition recall, and application scenarios.`;
+
+  const systemInstruction = `You are an expert university examiner.
+CRITICAL MANDATE:
+Create high-quality exam questions strictly from the uploaded source excerpt.
+- Infer the subject domain from the supplied text itself; do not import concepts from other domains.
+- If the text contains formulas or numerical procedures, include relevant calculation questions.
+- If mathematics is not present in the source, do not invent mathematical questions.
+- Do not invent page numbers, syllabus coverage, past-exam frequency, or facts absent from the source.
+- Every MCQ answer key must point to the option that is actually correct according to the source.
+- Vary correct option positions naturally; never default all answer keys to the same index.
+${typeConstraint}`;
+
+  const prompt = `Generate ${count} interactive quiz questions for:
+Domain / Subject: "${subject}"
+Topic: "${topic}"
+Difficulty Level: "${difficulty}"
+Question Format Style: "${questionType || "Mixed (MCQs, True/False, Concepts, Applications)"}"
+
+AUTHORITATIVE SOURCE MATERIAL:
+${extractedContent.slice(0, 16000)}
+
+RETURN STRICT JSON ARRAY ONLY.
+Each item must be an object with the following fields:
+- id: unique string identifier
+- question: question derived from the source excerpt
+- options: array of four distinct, non-empty option strings
+- correctIndex: zero-based integer index pointing to the correct option
+- explanation: explanation supported by the source excerpt
+- topic: topic explicitly discussed in the source excerpt
+- questionType: one of "mcq", "true_false", "concept", "definition", "application", "code", or "numerical"
+
+Do not copy these field descriptions as answers. Do not invent content if the uploaded material does not support the question. The correctIndex must match the correct option.
+Do not wrap in markdown. Output valid JSON array only.`;
+
+  try {
+    const raw = await runPromptWithAI(systemInstruction, prompt);
+    const parsed = extractJSON(raw);
+    const validQuestions = Array.isArray(parsed)
+      ? parsed.filter((question: any) =>
+          question &&
+          typeof question.question === "string" && question.question.trim() &&
+          Array.isArray(question.options) && question.options.length >= 2 &&
+          question.options.every((option: unknown) => typeof option === "string" && option.trim()) &&
+          Number.isInteger(question.correctIndex) &&
+          question.correctIndex >= 0 && question.correctIndex < question.options.length &&
+          typeof question.explanation === "string" && question.explanation.trim()
+        )
+      : [];
+    if (validQuestions.length === 0) throw new Error("The model returned no questions with a valid answer key.");
+    return validQuestions.map((question: any, idx: number) => ({
+      id: typeof question.id === "string" && question.id.trim() ? question.id : `q-${Date.now()}-${idx}`,
+      question: question.question.trim(),
+      options: question.options.map((option: string) => option.trim()),
+      correctIndex: question.correctIndex,
+      explanation: question.explanation.trim(),
+      topic: typeof question.topic === "string" && question.topic.trim() ? question.topic : topic,
+      questionType: ["mcq", "true_false", "concept", "definition", "application", "numerical", "code"].includes(question.questionType) ? question.questionType : "mcq",
+    }));
+  } catch (e: any) {
+    console.error("MCQ generation error:", e);
+    throw new Error(`Unable to generate quiz questions for "${subject}": ${e.message}`);
+  }
+}
+
+// =========================================================================
+// 4. FLASHCARDS GENERATION (10, 20, 50, CUSTOM, STRICTLY SOURCE-DRIVEN)
+// =========================================================================
+
+export async function generateFlashcards(params: {
+  subject: string;
+  topic?: string;
+  count?: number;
+  difficulty?: string;
+  extractedContent?: string;
+  materialsContext?: string;
+}): Promise<Flashcard[]> {
+  const count = Math.min(50, Math.max(5, params.count || 10));
+  const { subject, topic, difficulty = "Medium", extractedContent } = params;
+  if (typeof extractedContent !== "string" || extractedContent.trim().length < 30) {
+    throw new Error("Upload a readable study document before generating flashcards.");
+  }
+
+  const systemInstruction = `You are a specialized active-recall flashcard creator.
+Create every flashcard strictly from the provided source excerpt. Preserve its terminology, formulas, and definitions.
+Do not introduce concepts or facts absent from the document.`;
+
+  const prompt = `Generate ${count} active recall flashcards for:
+Subject / Domain: "${subject}"
+Topic / Scope: "${topic || 'All Document Topics'}"
+Difficulty: "${difficulty}"
+
+AUTHORITATIVE SOURCE MATERIAL:
+${extractedContent.slice(0, 16000)}
+
+RETURN STRICT JSON ARRAY ONLY:
+[
+  {
+    "id": "fc1",
+    "front": "Clear question, key term, theorem, or mechanism",
+    "back": "Crisp, memorizable explanation, definition, or formula exactly as formulated in the study material",
+    "topic": "${topic || subject}",
+    "difficulty": "${difficulty}"
+  }
+]
+Do not wrap in markdown. Output valid JSON array only.`;
+
+  try {
+    const raw = await runPromptWithAI(systemInstruction, prompt);
+    const parsed = extractJSON(raw);
+    const validCards = Array.isArray(parsed)
+      ? parsed.filter((item: any) =>
+          item &&
+          typeof item.front === "string" && item.front.trim() &&
+          typeof item.back === "string" && item.back.trim()
+        )
+      : [];
+    if (validCards.length === 0) throw new Error("The model returned no usable source-grounded flashcards.");
+    return validCards.map((item: any, idx: number) => ({
+      id: typeof item.id === "string" && item.id.trim() ? item.id : `fc-${Date.now()}-${idx}`,
+      workspaceId: "",
+      front: item.front.trim(),
+      back: item.back.trim(),
+      topic: typeof item.topic === "string" && item.topic.trim() ? item.topic : topic || subject,
+      status: "unreviewed",
+      difficulty: ["Easy", "Medium", "Hard"].includes(item.difficulty) ? item.difficulty : difficulty,
+    }));
+  } catch (e: any) {
+    console.error("Flashcards generation error:", e);
+    throw new Error(`Unable to generate revision flashcards for "${subject}": ${e.message}`);
+  }
+}
+
+// =========================================================================
+// 5. IMPORTANT QUESTIONS GENERATION (STRICTLY SOURCE-DRIVEN)
+// =========================================================================
+
+export async function generateImportantQuestions(params: {
+  subject: string;
+  branch: string;
+  extractedContent?: string;
+  materialsContext?: string;
+}): Promise<ImportantQuestion[]> {
+  const { subject, branch, extractedContent } = params;
+  if (typeof extractedContent !== "string" || extractedContent.trim().length < 30) {
+    throw new Error("Upload a readable study document before generating important questions.");
+  }
+
+  const systemInstruction = `You are an academic question writer.
+Generate exam-style practice questions strictly from the uploaded source. Do not claim that questions were historically repeated or likely to appear unless the supplied source explicitly includes evidence such as past papers.`;
+
+  const prompt = `Generate 6 essential university examination questions for:
+Subject / Domain: "${subject}"
+Branch / Specialization: "${branch}"
+
+AUTHORITATIVE SOURCE MATERIAL:
+${extractedContent.slice(0, 16000)}
+
+RETURN STRICT JSON ARRAY ONLY:
+[
+  {
+    "id": "iq1",
+    "unit": "Unit / Chapter from document",
+    "topic": "Specific Topic",
+    "question": "Full exam question text...",
+    "difficulty": "Medium",
+    "frequency": "Not stated in source",
+    "answerSummary": "Structured 3-4 sentence key answer outline detailing essential points required to score full marks."
+  }
+]
+Valid difficulty values: "Low", "Medium", "High".
+Use "Not stated in source" for frequency unless the supplied source explicitly includes past-question statistics; do not label questions repeated/high probability based on a syllabus alone.
+For frequency, use "Not stated in source" unless the text explicitly contains historical repetition evidence. Never infer frequency from a syllabus alone.
+Do not wrap in markdown. Output valid JSON only.`;
+
+  try {
+    const raw = await runPromptWithAI(systemInstruction, prompt);
+    const parsed = extractJSON(raw);
+    const validQuestions = Array.isArray(parsed)
+      ? parsed.filter((question: any) => question && typeof question.question === "string" && question.question.trim())
+      : [];
+    if (validQuestions.length === 0) throw new Error("The model returned no valid important questions.");
+    return validQuestions.map((question: any, idx: number) => ({
+      id: typeof question.id === "string" && question.id.trim() ? question.id : `iq-${Date.now()}-${idx}`,
+      workspaceId: "",
+      unit: typeof question.unit === "string" && question.unit.trim() ? question.unit : "Unit not specified in source",
+      topic: typeof question.topic === "string" && question.topic.trim() ? question.topic : subject,
+      question: question.question.trim(),
+      difficulty: ["Low", "Medium", "High"].includes(question.difficulty) ? question.difficulty : "Medium",
+      frequency: typeof question.frequency === "string" && question.frequency.trim() ? question.frequency : "Not stated in source",
+      answerSummary: typeof question.answerSummary === "string" ? question.answerSummary : "",
+    }));
+  } catch (e: any) {
+    console.error("Important questions generation error:", e);
+    throw new Error(`Unable to generate exam questions for "${subject}": ${e.message}`);
+  }
+}
+
+// =========================================================================
+// 6. SUMMARY & NOTES GENERATION (STRICTLY SOURCE-DRIVEN)
+// =========================================================================
+
+export async function generateSummaryNotes(params: {
+  subject: string;
+  extractedContent?: string;
+}): Promise<SummaryNotesData> {
+  const { subject, extractedContent } = params;
+  if (typeof extractedContent !== "string" || extractedContent.trim().length < 30) {
+    throw new Error("Upload a readable study document before generating summary notes.");
+  }
+
+  const systemInstruction = `You are an academic synthesis expert.
+Your job is to generate a comprehensive, structured study guide and summary notes directly from the uploaded material.
+Preserve original terminology, core definitions, and formulas.`;
+
+  const prompt = `Generate structured revision summary notes for:
+Subject / Domain: "${subject}"
+
+AUTHORITATIVE SOURCE MATERIAL:
+${(extractedContent || "").slice(0, 18000)}
+
+RETURN STRICT JSON ONLY:
+{
+  "title": "Comprehensive Study Summary & Notes",
+  "domain": "${subject}",
+  "overview": "3-4 paragraph thorough academic overview synthesizing the whole document.",
+  "unitSummaries": [
+    {
+      "title": "Unit / Topic Heading",
+      "keyPoints": [
+        "Core point 1 with technical detail",
+        "Core point 2 with technical detail",
+        "Core point 3 with technical detail"
+      ]
+    }
+  ],
+  "keyTerminologyAndFormulas": [
+    {
+      "term": "Key Concept or Formula Name",
+      "explanation": "Precise explanation or derivation",
+      "detailOrCode": "Equation, snippet, or mechanism if applicable"
+    }
+  ],
+  "examTakeaways": [
+    "A revision takeaway supported by the document",
+    "A key distinction explicitly present in the source",
+    "A theorem, formula, or method that the source emphasizes"
+  ]
+}
+Do not wrap in markdown. Output valid JSON only.`;
+
+  try {
+    const raw = await runPromptWithAI(systemInstruction, prompt);
+    const parsed = extractJSON(raw);
+    if (typeof parsed.overview !== "string" || parsed.overview.trim().length < 30) {
+      throw new Error("The model returned incomplete summary notes.");
+    }
+    return {
+      title: typeof parsed.title === "string" && parsed.title.trim() ? parsed.title : `${subject} Summary Notes`,
+      domain: typeof parsed.domain === "string" && parsed.domain.trim() ? parsed.domain : subject,
+      overview: parsed.overview.trim(),
+      unitSummaries: Array.isArray(parsed.unitSummaries) ? parsed.unitSummaries : [],
+      keyTerminologyAndFormulas: Array.isArray(parsed.keyTerminologyAndFormulas) ? parsed.keyTerminologyAndFormulas : [],
+      examTakeaways: Array.isArray(parsed.examTakeaways) ? parsed.examTakeaways : [],
+    };
+  } catch (e: any) {
+    console.error("Summary notes generation error:", e);
+    throw new Error(`Unable to generate notes for "${subject}": ${e.message}`);
+  }
+}
+
+// =========================================================================
+// 7. INTERACTIVE PRACTICE EXERCISES (STRICTLY SOURCE-DRIVEN)
+// =========================================================================
+
+export async function generatePracticeExercises(params: {
+  subject: string;
+  topic?: string;
+  difficulty?: string;
+  extractedContent?: string;
+}): Promise<PracticeExercise[]> {
+  const { subject, topic, difficulty = "Medium", extractedContent } = params;
+  if (typeof extractedContent !== "string" || extractedContent.trim().length < 30) {
+    throw new Error("Upload a readable study document before generating practice exercises.");
+  }
+
+  const systemInstruction = `You are an engineering practical exam and lab coach.
+Generate interactive practice challenges based on the uploaded document.
+- If code is present: generate code tracing, debugging, or function implementation.
+- If formulas/math are present: generate step-by-step numerical calculation exercises.
+- If conceptual/systems: generate architectural design or scenario trade-off problem solving.`;
+
+  const prompt = `Generate 4 interactive practice exercises for:
+Domain / Subject: "${subject}"
+Topic: "${topic || 'Core Document Modules'}"
+Difficulty: "${difficulty}"
+
+AUTHORITATIVE SOURCE MATERIAL:
+${(extractedContent || "").slice(0, 16000)}
+
+RETURN STRICT JSON ARRAY ONLY:
+[
+  {
+    "id": "p1",
+    "title": "Exercise Title",
+    "topic": "${topic || subject}",
+    "type": "code" | "problem" | "concept" | "scenario",
+    "difficulty": "${difficulty}",
+    "problemStatement": "Clear problem statement requiring active student problem solving...",
+    "hint": "Constructive hint to get started without giving away the full answer",
+    "solution": "Complete step-by-step solution / code / numerical calculation",
+    "explanation": "Pedagogical breakdown of why this solution is optimal."
+  }
+]
+Do not wrap in markdown. Output valid JSON only.`;
+
+  try {
+    const raw = await runPromptWithAI(systemInstruction, prompt);
+    const parsed = extractJSON(raw);
+    const validExercises = Array.isArray(parsed)
+      ? parsed.filter((exercise: any) =>
+          exercise &&
+          typeof exercise.title === "string" && exercise.title.trim() &&
+          typeof exercise.problemStatement === "string" && exercise.problemStatement.trim() &&
+          typeof exercise.solution === "string" && exercise.solution.trim()
+        )
+      : [];
+    if (validExercises.length === 0) throw new Error("The model returned no usable practice exercises.");
+    return validExercises.map((exercise: any, idx: number) => ({
+      id: typeof exercise.id === "string" && exercise.id.trim() ? exercise.id : `prac-${Date.now()}-${idx}`,
+      title: exercise.title.trim(),
+      topic: typeof exercise.topic === "string" && exercise.topic.trim() ? exercise.topic : topic || subject,
+      type: ["code", "problem", "concept", "scenario"].includes(exercise.type) ? exercise.type : "concept",
+      difficulty: ["Easy", "Medium", "Hard"].includes(exercise.difficulty) ? exercise.difficulty : difficulty,
+      problemStatement: exercise.problemStatement.trim(),
+      hint: typeof exercise.hint === "string" ? exercise.hint : "",
+      solution: exercise.solution.trim(),
+      explanation: typeof exercise.explanation === "string" ? exercise.explanation : "",
+    }));
+  } catch (e: any) {
+    console.error("Practice generation error:", e);
+    throw new Error(`Unable to generate practice for "${subject}": ${e.message}`);
+  }
+}
+
+// =========================================================================
+// 8. AI TUTOR CHAT (GROUNDED IN UPLOADED MATERIAL)
+// =========================================================================
+
+import { searchKnowledgeBase } from "./knowledgeBaseService";
+
+export async function chatWithAITutor(params: {
+  messages: Array<{ sender: "user" | "ai" | "assistant"; text: string }>;
+  subject: string;
+  extractedContent?: string;
+  college?: string;
+  branch?: string;
+  learningGoal?: string;
+  studyContext?: StudyContext;
+}) {
+  const { messages, subject, extractedContent, college, branch, learningGoal, studyContext } = params;
+
+  // Extract latest user message for scoped RAG retrieval
+  const lastUserMsg = [...messages].reverse().find((m) => m.sender === "user")?.text || "";
+  
+  let retrievedChunksContext = "";
+  const citations: Array<{
+    documentName: string;
+    pageNumber: number;
+    subject: string;
+    unit: string;
+    sourceUrl?: string;
+  }> = [];
+
+  try {
+    // Only search the shared index when the caller explicitly selects an indexed library source.
+    // Uploaded-material tutoring must not accidentally blend another college's documents into this answer.
+    if (lastUserMsg && studyContext?.sourceType === "drive_material") {
+      const ragResults = await searchKnowledgeBase(lastUserMsg, studyContext, { topK: 3 });
+      if (ragResults.chunks.length > 0) {
+        retrievedChunksContext = ragResults.chunks
+          .map((item, idx) => {
+            const c = item.chunk;
+            citations.push({
+              documentName: c.documentName,
+              pageNumber: c.pageNumber,
+              subject: c.subject,
+              unit: c.unit,
+              sourceUrl: c.sourceUrl,
+            });
+            return `--- [SOURCE EXCERPT ${idx + 1}] Document: "${c.documentName}" (Page ${c.pageNumber}) | Subject: ${c.subject} (${c.unit} - ${c.topic}) ---\n${c.content}`;
+          })
+          .join("\n\n");
+      }
+    }
+  } catch (err) {
+    console.warn("Knowledge base retrieval failed during tutor chat:", err);
+  }
+
+  const systemInstruction = `You are AstraMind AI Tutor helping a student with the uploaded source material for "${subject}" (${branch || "branch not specified"}).
+Ground explanations and citations only in the source excerpts supplied in this request. Never invent document names, citations, page numbers, or unsupported quotations.
+If the source does not contain enough information, say so clearly. If adding general knowledge, label it explicitly as outside the uploaded source.
+Use concise Markdown, headings, bullets, and code/math blocks where helpful.`;
+
+  const combinedReference = [
+    retrievedChunksContext ? `INDEXED SOURCE EXCERPTS (HIGH PRIORITY):\n${retrievedChunksContext}` : "",
+    extractedContent ? `WORKSPACE UPLOADED NOTES:\n${extractedContent.slice(0, 10000)}` : "",
+  ].filter(Boolean).join("\n\n");
+
+  const conversationHistory = messages
+    .map((m) => `${m.sender === "user" ? "Student" : "AstraMind Tutor"}: ${m.text}`)
+    .join("\n\n");
+
+  const prompt = `SOURCE MATERIAL REFERENCE:
+${combinedReference}
+
+CONVERSATION HISTORY:
+${conversationHistory}
+
+Provide the next pedagogical tutor response to the student's latest question.`;
+
+  try {
+    const response = await runPromptWithAI(systemInstruction, prompt, 0.4);
+    return { 
+      text: response, 
+      citations: Array.from(new Set(citations.map(c => JSON.stringify(c)))).map(s => JSON.parse(s)) 
+    };
+  } catch (e: any) {
+    console.error("Tutor chat error:", e);
+    return { 
+      text: "I encountered an error connecting to the AI service. Please try asking again.",
+      citations: []
+    };
+  }
+}

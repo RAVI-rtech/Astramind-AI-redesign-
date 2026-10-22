@@ -1,0 +1,6 @@
+{
+  "name": "AstraMind AI",
+  "description": "AstraMind AI: A personalized learning workspace for students across schools, colleges, universities, programs, and disciplines, with source-grounded study tools, quizzes, flashcards, notes, and live assessments.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
