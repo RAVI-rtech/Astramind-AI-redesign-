@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { getAppRedirectUrl } from "../utils/navigation";
 import { 
   User, 
   Mail, 
@@ -376,7 +377,7 @@ export default function AccountCenter({
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: window.location.origin,
+          redirectTo: getAppRedirectUrl(),
         },
       });
 

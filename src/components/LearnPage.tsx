@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { getAssetUrl } from "../utils/navigation";
 import {
   GraduationCap,
   Sparkles,
@@ -935,7 +936,7 @@ export default function LearnPage({ accentColorClass }: LearnPageProps) {
                   "You"
                 ) : (
                   <img
-                    src="/logo.png"
+                    src={getAssetUrl("/logo.png")}
                     alt="AstraMind AI Tutor"
                     className="w-full h-full object-contain p-0.5"
                     onError={(e) => {

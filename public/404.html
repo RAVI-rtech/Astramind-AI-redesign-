@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AstraMind AI</title>
+    <script>
+      // GitHub Pages SPA fallback for /Astramind-Ai/ subfolder routes
+      (function () {
+        var base = "/Astramind-Ai";
+        var path = window.location.pathname || "/";
+        var subPath = path;
+        if (subPath.toLowerCase().indexOf(base.toLowerCase()) === 0) {
+          subPath = subPath.slice(base.length) || "/";
+        }
+        var target =
+          window.location.origin +
+          base +
+          "/?p=" +
+          encodeURIComponent(subPath) +
+          (window.location.search ? "&" + window.location.search.slice(1) : "") +
+          window.location.hash;
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body style="background:#0d0d0e;color:#fcfcfc;"></body>
+</html>

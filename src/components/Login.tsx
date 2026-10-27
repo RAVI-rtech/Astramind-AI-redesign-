@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Logo from "./Logo";
 import { Sparkles, Lock, AlertCircle, ShieldCheck, Check, Clock, Eye, EyeOff, Hash, GraduationCap, Layers, User } from "lucide-react";
 import { checkPasswordStrength } from "../utils/security";
+import { getAppRedirectUrl } from "../utils/navigation";
 import { UserProfile } from "../types";
 import {
   supabase,
@@ -307,7 +308,7 @@ export default function Login({ onLogin, accentColorClass, redirectReason, onCan
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: window.location.origin,
+          redirectTo: getAppRedirectUrl(),
         },
       });
 

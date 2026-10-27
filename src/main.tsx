@@ -4,10 +4,12 @@ import App from './App.tsx';
 import './index.css';
 import { LanguageProvider } from './i18n';
 
-// Register Service Worker for PWA
+// Register Service Worker for PWA using configured base path (/Astramind-Ai/)
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then((reg) => {
+    const baseUrl = (import.meta as any).env?.BASE_URL || '/Astramind-Ai/';
+    const swUrl = `${baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`}sw.js`;
+    navigator.serviceWorker.register(swUrl, { scope: baseUrl }).then((reg) => {
       console.log('AstraMind Service Worker registered with scope:', reg.scope);
     }).catch((err) => {
       console.warn('Service worker registration failed:', err);

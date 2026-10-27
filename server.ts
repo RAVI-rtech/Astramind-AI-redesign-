@@ -3526,7 +3526,7 @@ app.post("/api/attendance/report", async (req, res) => {
   }
 });
 
-// 4. Vite middleware Integration for single-page applications
+// 4. Vite middleware Integration for single-page applications (supports /Astramind-Ai/ base path and root /)
 async function bootstrap() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting Express in DEVELOPMENT mode with Vite dev middleware...");
@@ -3540,6 +3540,15 @@ async function bootstrap() {
     });
     app.use(async (req, res, next) => {
       try {
+        if (
+          req.url &&
+          !req.url.startsWith("/api") &&
+          !req.url.startsWith("/live") &&
+          !req.url.startsWith("/ws") &&
+          !req.url.toLowerCase().startsWith("/astramind-ai")
+        ) {
+          req.url = `/Astramind-Ai${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
+        }
         const vite = await vitePromise;
         vite.middlewares(req, res, next);
       } catch (err) {
@@ -3549,6 +3558,7 @@ async function bootstrap() {
   } else {
     console.log("Starting Express in PRODUCTION mode serving static files...");
     const distPath = path.join(process.cwd(), "dist");
+    app.use("/Astramind-Ai", express.static(distPath));
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

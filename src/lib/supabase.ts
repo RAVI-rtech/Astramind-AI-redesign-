@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { UserProfile } from "../types";
+import { getAppRedirectUrl } from "../utils/navigation";
 
 // Environment variables for Supabase Project URL and Publishable (Anon) Key
 const supabaseUrl =
@@ -45,7 +46,7 @@ export function handleAndLogGoogleAuthError(err: any): FormattedAuthError {
     (typeof err === "string" ? err : "Google sign-in failed.");
   const code =
     err?.code || err?.error || err?.status || err?.name || "OAUTH_ERROR";
-  const redirectUrl = typeof window !== "undefined" ? window.location.origin : "";
+  const redirectUrl = typeof window !== "undefined" ? getAppRedirectUrl() : "";
   const isConfigured = isSupabaseConfigured();
 
   console.error("=================================================");

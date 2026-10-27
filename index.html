@@ -7,14 +7,37 @@
     <meta name="description" content="AstraMind AI: A personalized learning workspace for students across schools, colleges, universities, programs, and disciplines, with source-grounded study tools, quizzes, flashcards, notes, and live assessments." />
     <meta property="og:title" content="AstraMind AI" />
     <meta property="og:description" content="AstraMind AI: A personalized learning workspace for students across schools, colleges, universities, programs, and disciplines, with source-grounded study tools, quizzes, flashcards, notes, and live assessments." />
-    <link rel="icon" type="image/png" href="/logo.png" />
-    <link rel="shortcut icon" type="image/png" href="/logo.png" />
-    <link rel="apple-touch-icon" href="/logo.png" />
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" href="%BASE_URL%logo.png" />
+    <link rel="shortcut icon" type="image/png" href="%BASE_URL%logo.png" />
+    <link rel="apple-touch-icon" href="%BASE_URL%logo.png" />
+    <link rel="manifest" href="%BASE_URL%manifest.json" />
     <meta name="theme-color" content="#0d0d0e" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="AstraMind" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <script>
+      // Restore clean SPA URL on GitHub Pages when redirected from 404.html (?p=/subroute)
+      (function () {
+        try {
+          var search = window.location.search;
+          if (search && search.indexOf("p=") !== -1) {
+            var params = new URLSearchParams(search);
+            var route = params.get("p");
+            if (route) {
+              params.delete("p");
+              var cleanRoute = route.charAt(0) === "/" ? route : "/" + route;
+              var base = "/Astramind-Ai";
+              var targetPath = cleanRoute.toLowerCase().indexOf(base.toLowerCase()) === 0
+                ? cleanRoute
+                : base + (cleanRoute === "/" ? "/" : cleanRoute);
+              var remainingQuery = params.toString();
+              var nextUrl = targetPath + (remainingQuery ? "?" + remainingQuery : "") + window.location.hash;
+              window.history.replaceState(null, "", nextUrl);
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
 
     <!-- Google Fonts for AstraMind Studio (Variation 3) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">

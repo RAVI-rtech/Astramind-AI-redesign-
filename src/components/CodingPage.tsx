@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { getAssetUrl } from "../utils/navigation";
 import {
   GraduationCap,
   Sparkles,
@@ -605,7 +606,7 @@ export default function CodingPage({ accentColorClass, onStartChat }: CodingPage
           <div className="flex items-center justify-between border-b border-white/[0.06] pb-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl overflow-hidden border border-white/10 bg-[#1f1b2e] flex items-center justify-center shrink-0 p-1">
-                <img src="/logo.png" alt="AstraMind Logo" className="w-full h-full object-contain rounded-xl" />
+                <img src={getAssetUrl("/logo.png")} alt="AstraMind Logo" className="w-full h-full object-contain rounded-xl" />
               </div>
               <div>
                 <h2 className="text-base font-medium text-white flex items-center gap-2">

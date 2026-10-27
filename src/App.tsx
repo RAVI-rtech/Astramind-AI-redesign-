@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Sparkles, ArrowRight, User, Trash2, Plus, MessageSquare, WifiOff, Gamepad2, X, ShieldAlert } from "lucide-react";
 import { ChatSession, Message, Settings, Attachment, UserProfile, Theme, StudyWorkspace, WorkspaceTab } from "./types";
 import { generateSessionToken } from "./utils/security";
-import { normalizeInternalPath, toBrowserUrl } from "./utils/navigation";
+import { normalizeInternalPath, toBrowserUrl, getAppRedirectUrl } from "./utils/navigation";
 import {
   supabase,
   getOrCreateSupabaseProfile,
@@ -678,13 +678,14 @@ export default function App() {
         return;
       }
 
+      const redirectUrl = getAppRedirectUrl();
       console.log("Initiating Google Sign-In via Supabase OAuth...");
-      console.log("Configured Redirect URL:", window.location.origin);
+      console.log("Configured Redirect URL:", redirectUrl);
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: window.location.origin,
+          redirectTo: redirectUrl,
         },
       });
 
