@@ -192,7 +192,6 @@ export default function CreateWorkspaceModal({
       setShowManualNotes(false);
       // The imported document's displayed course name comes from its actual official link, not the previous default subject.
       setSubject(link.title.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() || profile?.detectedDomain || "");
-      setCustomSubject("");
       if (!name.trim()) setName(`${college.trim()} — ${programType} Study Workspace`);
       setSyllabusDiscoveryNote(`Imported ${data.fileName || link.title}. The extracted text is ready for study tools.`);
     } catch (error: any) {

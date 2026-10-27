@@ -3528,15 +3528,24 @@ app.post("/api/attendance/report", async (req, res) => {
 
 // 4. Vite middleware Integration for single-page applications
 async function bootstrap() {
-  let server: Server;
-  
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting Express in DEVELOPMENT mode with Vite dev middleware...");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
+    const vitePromise = createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: "spa",
     });
-    app.use(vite.middlewares);
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     console.log("Starting Express in PRODUCTION mode serving static files...");
     const distPath = path.join(process.cwd(), "dist");
@@ -3546,7 +3555,7 @@ async function bootstrap() {
     });
   }
 
-  server = app.listen(PORT, "0.0.0.0", () => {
+  const server: Server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 

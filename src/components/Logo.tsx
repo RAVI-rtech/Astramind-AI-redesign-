@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { X, Sparkles } from "lucide-react";
+import { getAssetUrl } from "../utils/navigation";
 
 export interface LogoProps {
   className?: string;
@@ -120,7 +121,7 @@ export function AppLogo({
           {/* High Res Logo Showcase */}
           <div className="relative w-48 h-48 sm:w-56 sm:h-56 p-3 rounded-2xl bg-[#0a0d18] border border-white/10 shadow-[0_0_24px_rgba(255,255,255,0.12)] flex items-center justify-center">
             <img
-              src="/logo.png"
+              src={getAssetUrl("/logo.png")}
               alt="AstraMind AI Official Logo"
               className="w-full h-full object-contain rounded-xl"
             />
@@ -191,7 +192,7 @@ export function AppLogo({
         >
           <div className="relative flex items-center justify-center w-[128px] h-[128px] shrink-0 p-2 rounded-3xl border border-white/10 bg-[#0f1424] shadow-[0_0_12px_rgba(255,255,255,0.08)]">
             <img
-              src="/logo.png"
+              src={getAssetUrl("/logo.png")}
               alt="AstraMind AI"
               className="w-full h-full object-contain rounded-2xl"
               onError={() => setHasError(true)}
@@ -227,7 +228,7 @@ export function AppLogo({
         >
           <div className="relative flex items-center justify-center w-[96px] h-[96px] shrink-0 p-2 rounded-2xl border border-white/10 bg-[#0f1424] shadow-[0_0_12px_rgba(255,255,255,0.08)]">
             <img
-              src="/logo.png"
+              src={getAssetUrl("/logo.png")}
               alt="AstraMind AI"
               className="w-full h-full object-contain rounded-xl"
               onError={() => setHasError(true)}
@@ -263,7 +264,7 @@ export function AppLogo({
         >
           <div className="relative flex items-center justify-center w-[40px] h-[40px] shrink-0 p-1 rounded-xl border border-white/10 bg-[#0f1424] shadow-[0_0_12px_rgba(255,255,255,0.08)]">
             <img
-              src="/logo.png"
+              src={getAssetUrl("/logo.png")}
               alt="AstraMind AI"
               className="w-full h-full object-contain rounded-lg"
               onError={() => setHasError(true)}
@@ -298,7 +299,7 @@ export function AppLogo({
         >
           <div className="relative flex items-center justify-center w-[28px] h-[28px] shrink-0 p-0.5 rounded-lg border border-white/10 bg-[#0f1424] shadow-[0_0_12px_rgba(255,255,255,0.08)]">
             <img
-              src="/logo.png"
+              src={getAssetUrl("/logo.png")}
               alt="AstraMind AI"
               className="w-full h-full object-contain rounded-md"
               onError={() => setHasError(true)}
@@ -331,7 +332,7 @@ export function AppLogo({
           className={`relative flex items-center justify-center ${logoSizeClass} shrink-0 p-1 rounded-xl border border-white/10 bg-[#0f1424] shadow-[0_0_12px_rgba(255,255,255,0.08)]`}
         >
           <img
-            src="/logo.png"
+            src={getAssetUrl("/logo.png")}
             alt="AstraMind AI"
             className="w-full h-full object-contain rounded-lg"
             onError={() => setHasError(true)}

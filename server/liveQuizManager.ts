@@ -79,6 +79,7 @@ export interface LiveQuizRoom {
   title: string;
   college: string;
   regulation: string; // "VR25"
+  programType?: string;
   branch: string;
   year: string;
   semester: string;

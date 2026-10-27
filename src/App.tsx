@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Sparkles, ArrowRight, User, Trash2, Plus, MessageSquare, WifiOff, Gamepad2, X, ShieldAlert } from "lucide-react";
 import { ChatSession, Message, Settings, Attachment, UserProfile, Theme, StudyWorkspace, WorkspaceTab } from "./types";
 import { generateSessionToken } from "./utils/security";
+import { normalizeInternalPath, toBrowserUrl } from "./utils/navigation";
 import {
   supabase,
   getOrCreateSupabaseProfile,
@@ -134,7 +135,7 @@ export default function App() {
     favouriteModel: "No activity yet",
   });
   const [currentPath, setCurrentPath] = useState<string>(() => {
-    return window.location.pathname.toLowerCase().replace(/\/$/, "") || "/";
+    return normalizeInternalPath(window.location.pathname);
   });
   const [redirectDestination, setRedirectDestination] = useState<string | null>(null);
   const [redirectReason, setRedirectReason] = useState<string | null>(null);
@@ -278,7 +279,7 @@ export default function App() {
   };
 
   const normalizePath = (path: string) => {
-    return path.toLowerCase().replace(/\/$/, "") || "/";
+    return normalizeInternalPath(path);
   };
 
   const isProtectedRoute = (path: string) => {
@@ -299,15 +300,16 @@ export default function App() {
   };
 
   const updateUrl = (path: string, replace = false) => {
-    const normalized = normalizePath(path);
-    if (window.location.pathname !== normalized) {
+    const internal = normalizeInternalPath(path);
+    const targetBrowserUrl = toBrowserUrl(internal);
+    if (window.location.pathname !== targetBrowserUrl) {
       if (replace) {
-        window.history.replaceState({}, "", normalized);
+        window.history.replaceState({}, "", targetBrowserUrl);
       } else {
-        window.history.pushState({}, "", normalized);
+        window.history.pushState({}, "", targetBrowserUrl);
       }
     }
-    setCurrentPath(normalized);
+    setCurrentPath(internal);
   };
 
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
